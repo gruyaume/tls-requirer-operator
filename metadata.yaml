@@ -1,0 +1,17 @@
+# Copyright 2022 Guillaume Belanger
+# See LICENSE file for licensing details.
+
+name: tls-requirer-operator
+description: |
+  Charm that requests TLS certificates using the tls-certificates interface and stores them.
+summary: |
+  Charm that requests TLS certificates using the tls-certificates interface and stores them.
+
+
+requires:
+  certificates:
+    interface: tls-certificates
+
+peers:
+  replicas:
+    interface: orc8r-certifier-replica

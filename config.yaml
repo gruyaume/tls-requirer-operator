@@ -1,0 +1,8 @@
+# Copyright 2021 Canonical Ltd.
+# See LICENSE file for licensing details.
+
+options:
+  subject:
+    type: string
+    default:
+    description: Common name to be used.
