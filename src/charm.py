@@ -172,8 +172,11 @@ class TLSRequirerOperatorCharm(CharmBase):
             self.unit.status = WaitingStatus("Waiting for peer relation to be created")
             event.defer()
             return
-        self.unit.status = MaintenanceStatus("Requesting new certificate")
         old_csr = replicas_relation.data[self.app].get("csr")
+        print(old_csr)
+        if not old_csr:
+            self.unit.status = BlockedStatus("Old CSR not found")
+            return
         private_key_password = replicas_relation.data[self.app].get("private_key_password")
         private_key = replicas_relation.data[self.app].get("private_key")
         if not private_key or not private_key_password:
@@ -181,13 +184,15 @@ class TLSRequirerOperatorCharm(CharmBase):
                 "Waiting for private key and private key password to be set"
             )
             return
+        self.unit.status = MaintenanceStatus("Requesting new certificate")
         new_csr = generate_csr(
             private_key=private_key.encode(),
             private_key_password=private_key_password.encode(),
             subject=self._config_subject,
         )
         self.certificates.request_certificate_renewal(
-            old_certificate_signing_request=old_csr, new_certificate_signing_request=new_csr
+            old_certificate_signing_request=old_csr.encode(),
+            new_certificate_signing_request=new_csr,
         )
         replicas_relation.data[self.app].update({"csr": new_csr.decode()})
 

@@ -2,7 +2,8 @@
 
 ## Description
 
-Charm that requests TLS certificates using the tls-certificates interface and stores them.
+Charm that requests TLS certificates using the tls-certificates interface and stores them. It 
+doesn't do anything more than that. Simply asking for certificates. And storing them.
 
 ## Usage
 

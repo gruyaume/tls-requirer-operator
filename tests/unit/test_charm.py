@@ -8,7 +8,7 @@ from unittest.mock import Mock, patch
 
 from cryptography.hazmat.primitives import serialization
 from ops import testing
-from ops.model import BlockedStatus, MaintenanceStatus, WaitingStatus
+from ops.model import ActiveStatus, BlockedStatus, MaintenanceStatus, WaitingStatus
 
 from charm import TLSRequirerOperatorCharm
 
@@ -214,3 +214,226 @@ class TestCharm(unittest.TestCase):
             relation_id=peer_relation_id, app_or_unit=self.harness.charm.app.name
         )
         assert relation_data["csr"] == csr.decode()
+
+    def test_given_unit_is_not_leader_when_on_certificate_available_then_peer_relation_data_not_updated(  # noqa: E501
+        self,
+    ):
+        event = Mock()
+        self.harness.set_leader(is_leader=False)
+        peer_relation_id = self.harness.add_relation(
+            relation_name="replicas", remote_app=self.harness.charm.app.name
+        )
+
+        self.harness.charm._on_certificate_available(event=event)
+
+        relation_data = self.harness.get_relation_data(
+            relation_id=peer_relation_id, app_or_unit=self.harness.charm.app.name
+        )
+        assert "certificate" not in relation_data
+        assert "ca" not in relation_data
+        assert "chain" not in relation_data
+
+    def test_given_unit_is_leader_and_peer_relation_not_created_when_on_certificate_available_then_status_is_waiting(  # noqa: E501
+        self,
+    ):
+        certificate = "whatever cert"
+        ca = "whatever ca"
+        chain = "whatever chain"
+        event = Mock()
+        event.certificate = certificate
+        event.ca = ca
+        event.chain = chain
+        self.harness.set_leader(is_leader=True)
+
+        self.harness.charm._on_certificate_available(event=event)
+
+        self.assertEqual(
+            WaitingStatus("Waiting for peer relation to be created"),
+            self.harness.charm.unit.status,
+        )
+
+    def test_given_unit_is_leader_when_on_certificate_available_then_certificate_is_stored(self):
+        certificate = "whatever cert"
+        ca = "whatever ca"
+        chain = "whatever chain"
+        event = Mock()
+        event.certificate = certificate
+        event.ca = ca
+        event.chain = chain
+        self.harness.set_leader(is_leader=True)
+        peer_relation_id = self.harness.add_relation(
+            relation_name="replicas", remote_app=self.harness.charm.app.name
+        )
+
+        self.harness.charm._on_certificate_available(event=event)
+
+        relation_data = self.harness.get_relation_data(
+            relation_id=peer_relation_id, app_or_unit=self.harness.charm.app.name
+        )
+        self.assertEqual(certificate, relation_data["certificate"])
+        self.assertEqual(ca, relation_data["ca"])
+        self.assertEqual(chain, relation_data["chain"])
+
+    def test_given_unit_is_leader_when_on_certificate_available_then_status_is_active(self):
+        certificate = "whatever cert"
+        ca = "whatever ca"
+        chain = "whatever chain"
+        event = Mock()
+        event.certificate = certificate
+        event.ca = ca
+        event.chain = chain
+        self.harness.set_leader(is_leader=True)
+        self.harness.add_relation(relation_name="replicas", remote_app=self.harness.charm.app.name)
+
+        self.harness.charm._on_certificate_available(event=event)
+
+        self.assertEqual(ActiveStatus(), self.harness.charm.unit.status)
+
+    def test_given_subject_config_not_provided_when_on_config_changed_then_status_is_blocked(self):
+        self.harness.update_config(key_values={})
+
+        self.assertEqual(
+            BlockedStatus("Config `subject` must be set."), self.harness.charm.unit.status
+        )
+
+    @patch(
+        "charms.tls_certificates_interface.v1.tls_certificates.TLSCertificatesRequiresV1.request_certificate_renewal"  # noqa: E501, W505
+    )
+    def test_given_unit_is_not_leader_when_on_certificate_expiring_then_certicate_renewal_is_not_made(  # noqa: E501
+        self, patch_certificate_renewal
+    ):
+        csr = "whatever csr"
+        event = Mock()
+        event.certificate_signing_request = csr
+        self.harness.set_leader(is_leader=False)
+        self.harness.add_relation(relation_name="replicas", remote_app=self.harness.charm.app.name)
+        self.harness.update_config(key_values={"subject": "whatever"})
+
+        self.harness.charm._on_certificate_expiring(event=event)
+
+        patch_certificate_renewal.assert_not_called()
+
+    @patch(
+        "charms.tls_certificates_interface.v1.tls_certificates.TLSCertificatesRequiresV1.request_certificate_renewal"  # noqa: E501, W505
+    )
+    def test_given_unit_is_leader_but_subject_config_not_set_when_on_certificate_expiring_then_certicate_renewal_is_not_made(  # noqa: E501
+        self, patch_certificate_renewal
+    ):
+        csr = "whatever csr"
+        event = Mock()
+        event.certificate_signing_request = csr
+        self.harness.set_leader(is_leader=True)
+        self.harness.add_relation(relation_name="replicas", remote_app=self.harness.charm.app.name)
+
+        self.harness.charm._on_certificate_expiring(event=event)
+
+        patch_certificate_renewal.assert_not_called()
+
+    @patch(
+        "charms.tls_certificates_interface.v1.tls_certificates.TLSCertificatesRequiresV1.request_certificate_renewal"  # noqa: E501, W505
+    )
+    def test_given_unit_is_leader_but_replicas_relation_not_ready_when_on_certificate_expiring_then_certicate_renewal_is_not_made(  # noqa: E501
+        self, patch_certificate_renewal
+    ):
+        csr = "whatever csr"
+        event = Mock()
+        event.certificate_signing_request = csr
+        self.harness.set_leader(is_leader=True)
+        self.harness.update_config(key_values={"subject": "whatever"})
+
+        self.harness.charm._on_certificate_expiring(event=event)
+
+        patch_certificate_renewal.assert_not_called()
+
+    @patch("charm.generate_csr")
+    @patch(
+        "charms.tls_certificates_interface.v1.tls_certificates.TLSCertificatesRequiresV1.request_certificate_renewal"  # noqa: E501, W505
+    )
+    def test_given_unit_is_leader_replicas_relation_ready_and_subject_config_is_set_when_on_certificate_expiring_then_certicate_renewal_is_made(  # noqa: E501
+        self, patch_certificate_renewal, patch_generate_csr
+    ):
+        old_csr = "whatever old csr"
+        new_csr = "whatever new csr"
+        event = Mock()
+        event.certificate_signing_request = old_csr
+        patch_generate_csr.return_value = new_csr.encode()
+        self.harness.set_leader(is_leader=True)
+        self.harness.update_config(key_values={"subject": "whatever"})
+        relation_id = self.harness.add_relation(
+            relation_name="replicas", remote_app=self.harness.charm.app.name
+        )
+        self.harness.update_relation_data(
+            relation_id=relation_id,
+            app_or_unit=self.harness.charm.app.name,
+            key_values={
+                "private_key": PRIVATE_KEY,
+                "private_key_password": PRIVATE_KEY_PASSWORD.decode(),
+                "csr": old_csr,
+            },
+        )
+
+        self.harness.charm._on_certificate_expiring(event=event)
+
+        patch_certificate_renewal.assert_called_with(
+            old_certificate_signing_request=old_csr.encode(),
+            new_certificate_signing_request=new_csr.encode(),
+        )
+
+    @patch(
+        "charms.tls_certificates_interface.v1.tls_certificates.TLSCertificatesRequiresV1.request_certificate_renewal"  # noqa: E501, W505
+    )
+    def test_given_no_old_csr_stored_when_on_certificate_expiring_then_status_is_blocked(  # noqa: E501
+        self,
+        _,
+    ):
+        old_csr = "whatever old csr"
+        event = Mock()
+        event.certificate_signing_request = old_csr
+        self.harness.set_leader(is_leader=True)
+        self.harness.update_config(key_values={"subject": "whatever"})
+        relation_id = self.harness.add_relation(
+            relation_name="replicas", remote_app=self.harness.charm.app.name
+        )
+        self.harness.update_relation_data(
+            relation_id=relation_id,
+            app_or_unit=self.harness.charm.app.name,
+            key_values={
+                "private_key": PRIVATE_KEY,
+                "private_key_password": PRIVATE_KEY_PASSWORD.decode(),
+            },
+        )
+
+        self.harness.charm._on_certificate_expiring(event=event)
+
+        self.assertEqual(BlockedStatus("Old CSR not found"), self.harness.charm.unit.status)
+
+    @patch(
+        "charms.tls_certificates_interface.v1.tls_certificates.TLSCertificatesRequiresV1.request_certificate_renewal"  # noqa: E501, W505
+    )
+    def test_given_no_private_key_stored_when_on_certificate_expiring_then_status_is_waiting(  # noqa: E501
+        self,
+        _,
+    ):
+        old_csr = "whatever old csr"
+        event = Mock()
+        event.certificate_signing_request = old_csr
+        self.harness.set_leader(is_leader=True)
+        self.harness.update_config(key_values={"subject": "whatever"})
+        relation_id = self.harness.add_relation(
+            relation_name="replicas", remote_app=self.harness.charm.app.name
+        )
+        self.harness.update_relation_data(
+            relation_id=relation_id,
+            app_or_unit=self.harness.charm.app.name,
+            key_values={
+                "csr": old_csr,
+                "private_key_password": PRIVATE_KEY_PASSWORD.decode(),
+            },
+        )
+
+        self.harness.charm._on_certificate_expiring(event=event)
+
+        self.assertEqual(
+            WaitingStatus("Waiting for private key and private key password to be set"),
+            self.harness.charm.unit.status,
+        )
