@@ -854,7 +854,9 @@ class TLSCertificatesRequiresV1(Object):
         """
         provider_relation_data = _load_unit_relation_data(event.relation.data[event.unit])  # type: ignore[index]
         if not self._relation_data_is_valid(provider_relation_data):
-            logger.warning("Relation data did not pass JSON Schema validation")
+            logger.warning(
+                f"Relation data did not pass JSON Schema validation: {provider_relation_data}"
+            )
             return
         provider_csrs = _get_provider_csrs(event.relation.data[event.unit])  # type: ignore[index]
         requirer_csrs = _get_requirer_csrs(event.relation.data[self.model.unit])
