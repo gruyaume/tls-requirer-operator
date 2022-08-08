@@ -3,3 +3,12 @@
 
 get-certificate:
   description: Returns the TLS Certificate.
+
+show-certificates-relation-data:
+    description: Shows relation data.
+
+renew-certificate:
+  description: Asks for certificate renewal.
+
+revoke-certificate:
+  description: Asks for certificate revocation.
