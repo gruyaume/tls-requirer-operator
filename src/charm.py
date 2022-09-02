@@ -27,7 +27,7 @@ from ops.charm import (
     ActionEvent,
     CharmBase,
     ConfigChangedEvent,
-    RelationCreatedEvent,
+    InstallEvent,
     RelationJoinedEvent,
 )
 from ops.main import main
@@ -44,6 +44,7 @@ class TLSRequirerOperatorCharm(CharmBase):
         super().__init__(*args)
         self.certificates = TLSCertificatesRequiresV1(self, "certificates")
         self.framework.observe(self.on.config_changed, self._on_config_changed)
+        self.framework.observe(self.on.install, self._on_install)
         self.framework.observe(
             self.on.certificates_relation_joined, self._on_certificates_relation_joined
         )
@@ -56,9 +57,6 @@ class TLSRequirerOperatorCharm(CharmBase):
         self.framework.observe(
             self.on.show_certificates_relation_data_action,
             self._on_show_certificates_relation_data_action,
-        )
-        self.framework.observe(
-            self.on.replicas_relation_created, self._on_replicas_relation_created
         )
         self.framework.observe(
             self.certificates.on.certificate_available, self._on_certificate_available
@@ -86,34 +84,12 @@ class TLSRequirerOperatorCharm(CharmBase):
         return self.model.config.get("subject", None)
 
     @property
-    def _private_key_is_stored(self) -> bool:
-        if not self._replicas_relation_created:
-            logger.info("Replicas relation not created")
-            return False
-        replicas_relation = self.model.get_relation("replicas")
-        private_key_password = replicas_relation.data[self.app].get("private_key_password")  # type: ignore[union-attr]  # noqa: E501
-        private_key = replicas_relation.data[self.app].get("private_key")  # type: ignore[union-attr]  # noqa: E501
-        if private_key and private_key_password:
-            return True
-        else:
-            logger.info("Private key and password are not stored")
-            return False
-
-    @property
     def _replicas_relation_created(self) -> bool:
         return self._relation_created("replicas")
 
     @property
     def _certificates_relation_created(self) -> bool:
         return self._relation_created("certificates")
-
-    @property
-    def _csr_is_stored(self) -> bool:
-        replicas_relation = self.model.get_relation("replicas")
-        old_csr = replicas_relation.data[self.app].get("csr")  # type: ignore[union-attr]
-        if not old_csr:
-            return False
-        return True
 
     @staticmethod
     def _generate_password() -> str:
@@ -125,10 +101,79 @@ class TLSRequirerOperatorCharm(CharmBase):
         chars = string.ascii_letters + string.digits
         return "".join(secrets.choice(chars) for _ in range(12))
 
-    def _on_replicas_relation_created(self, event: RelationCreatedEvent) -> None:
-        """Triggered when peer relation is created.
+    @property
+    def _stored_private_key_password(self) -> Optional[str]:
+        return self._get_item_from_peer_relation_data(key="private_key_password")
 
-        Generates and stores a private key on
+    @property
+    def _stored_private_key(self) -> Optional[str]:
+        return self._get_item_from_peer_relation_data(key="private_key")
+
+    @property
+    def _stored_csr(self) -> Optional[str]:
+        return self._get_item_from_peer_relation_data(key="csr")
+
+    @property
+    def _stored_certificate(self) -> Optional[str]:
+        return self._get_item_from_peer_relation_data(key="certificate")
+
+    @property
+    def _stored_ca_certificate(self) -> Optional[str]:
+        return self._get_item_from_peer_relation_data(key="ca")
+
+    @property
+    def _stored_ca_chain(self) -> Optional[str]:
+        return self._get_item_from_peer_relation_data(key="chain")
+
+    def _store_private_key(self, private_key: str) -> None:
+        self._store_item(key="private_key", value=private_key)
+
+    def _store_private_key_password(self, private_key_password: str) -> None:
+        self._store_item(key="private_key_password", value=private_key_password)
+
+    def _store_certificate(self, certificate: str) -> None:
+        self._store_item(key="certificate", value=certificate)
+
+    def _store_ca_certificate(self, certificate: str) -> None:
+        self._store_item(key="ca", value=certificate)
+
+    def _store_ca_chain(self, chain: str) -> None:
+        self._store_item(key="chain", value=chain)
+
+    def _store_csr(self, csr: str) -> None:
+        self._store_item(key="csr", value=csr)
+
+    def _store_item(self, key: str, value: str) -> None:
+        replicas_relation = self.model.get_relation("replicas")
+        if not replicas_relation:
+            raise RuntimeError("Peer relation not created")
+        replicas_relation.data[self.unit].update({key: value})
+
+    def _unstore_certificate(self) -> None:
+        self._unstore_item("certificate")
+
+    def _unstore_ca_certificate(self) -> None:
+        self._unstore_item("ca")
+
+    def _unstore_ca_chain(self) -> None:
+        self._unstore_item("chain")
+
+    def _unstore_item(self, key: str) -> None:
+        replicas_relation = self.model.get_relation("replicas")
+        if not replicas_relation:
+            raise RuntimeError("Peer relation not created")
+        replicas_relation.data[self.unit].pop(key)
+
+    def _get_item_from_peer_relation_data(self, key: str) -> Optional[str]:
+        replicas_relation = self.model.get_relation("replicas")
+        if not replicas_relation:
+            raise RuntimeError("Peer relation not created")
+        return replicas_relation.data[self.unit].get(key, None)
+
+    def _on_install(self, event: InstallEvent) -> None:
+        """Triggered when install event.
+
+        Generates and stores a private key.
 
         Args:
             event: Juju event.
@@ -136,33 +181,37 @@ class TLSRequirerOperatorCharm(CharmBase):
         Returns:
             None
         """
-        if not self.unit.is_leader():
+        if not self._replicas_relation_created:
+            self.unit.status = WaitingStatus("Waiting for replicas relation to be created")
+            event.defer()
             return
         self._generate_private_key()
 
     def _on_certificates_relation_joined(self, event: RelationJoinedEvent) -> None:
-        if not self.unit.is_leader():
-            return
         if not self._config_subject:
-            self.unit.status = BlockedStatus("Config `subject` must be set.")
+            self.unit.status = BlockedStatus("Config `subject` must be set")
             return
-        if not self._private_key_is_stored:
-            self.unit.status = WaitingStatus("Waiting for private key to be generated.")
+        if not self._replicas_relation_created:
+            self.unit.status = WaitingStatus("Waiting for replicas relation to be created")
+            event.defer()
+            return
+        if not self._stored_private_key or not self._stored_private_key_password:
+            self.unit.status = WaitingStatus(
+                "Waiting for private key and password to be generated"
+            )
             event.defer()
             return
         self._request_certificate()
 
     def _on_certificate_available(self, event: CertificateAvailableEvent) -> None:
-        if not self.unit.is_leader():
-            return
         replicas_relation = self.model.get_relation("replicas")
         if not replicas_relation:
             self.unit.status = WaitingStatus("Waiting for peer relation to be created")
             event.defer()
             return
-        replicas_relation.data[self.app].update({"certificate": event.certificate})
-        replicas_relation.data[self.app].update({"ca": event.ca})
-        replicas_relation.data[self.app].update({"chain": event.chain})
+        self._store_certificate(event.certificate)
+        self._store_ca_certificate(event.ca)
+        self._store_ca_chain(event.chain)
         logger.info(f"New certificate is stored: {event.certificate}")
         self.unit.status = ActiveStatus()
 
@@ -175,13 +224,18 @@ class TLSRequirerOperatorCharm(CharmBase):
         Returns:
             None
         """
-        if not self.unit.is_leader():
-            return
         if not self._config_subject:
             self.unit.status = BlockedStatus("Config `subject` must be set.")
             return
-        if not self._private_key_is_stored:
-            self.unit.status = WaitingStatus("Waiting for private key to be generated.")
+        if not self._replicas_relation_created:
+            self.unit.status = WaitingStatus("Waiting for peer relation to be created.")
+            event.defer()
+            return
+        if not self._stored_private_key or not self._stored_private_key_password:
+            self.unit.status = WaitingStatus(
+                "Waiting for private key and password to be generated."
+            )
+            event.defer()
             return
         if not self._certificates_relation_created:
             self.unit.status = BlockedStatus(
@@ -196,44 +250,33 @@ class TLSRequirerOperatorCharm(CharmBase):
         Returns:
             None
         """
-        replicas_relation = self.model.get_relation("replicas")
-        private_key_password = replicas_relation.data[self.app].get(  # type: ignore[union-attr]
-            "private_key_password"
-        )
-        private_key = replicas_relation.data[self.app].get(  # type: ignore[union-attr]
-            "private_key"
-        )
+        if not self._stored_private_key or not self._stored_private_key_password:
+            raise RuntimeError("Private key or password not stored.")
         csr = generate_csr(
-            private_key=private_key.encode(),
-            private_key_password=private_key_password.encode(),
+            private_key=self._stored_private_key.encode(),
+            private_key_password=self._stored_private_key_password.encode(),
             subject=self._config_subject,
         )
         self.certificates.request_certificate_creation(certificate_signing_request=csr)
-        replicas_relation.data[self.app].update({"csr": csr.decode()})  # type: ignore[union-attr]
+        self._store_csr(csr.decode())
         self.unit.status = MaintenanceStatus("Requesting new certificate")
 
     def _renew_certificate(self) -> None:
-        replicas_relation = self.model.get_relation("replicas")
-        old_csr = replicas_relation.data[self.app].get("csr")  # type: ignore[union-attr]
-        private_key_password = replicas_relation.data[self.app].get(  # type: ignore[union-attr]
-            "private_key_password"
-        )
-        private_key = replicas_relation.data[self.app].get(  # type: ignore[union-attr]
-            "private_key"
-        )
+        if not self._stored_private_key or not self._stored_private_key_password:
+            raise RuntimeError("Private key or password not stored.")
+        if not self._stored_csr:
+            raise RuntimeError("Old CSR not stored.")
         self.unit.status = MaintenanceStatus("Requesting new certificate")
         new_csr = generate_csr(
-            private_key=private_key.encode(),
-            private_key_password=private_key_password.encode(),
+            private_key=self._stored_private_key.encode(),
+            private_key_password=self._stored_private_key_password.encode(),
             subject=self._config_subject,
         )
         self.certificates.request_certificate_renewal(
-            old_certificate_signing_request=old_csr.encode(),
+            old_certificate_signing_request=self._stored_csr.encode(),
             new_certificate_signing_request=new_csr,
         )
-        replicas_relation.data[self.app].update(  # type: ignore[union-attr]
-            {"csr": new_csr.decode()}
-        )
+        self._store_csr(csr=new_csr.decode())
         self.unit.status = MaintenanceStatus("Requesting new certificate")
 
     def _relation_created(self, relation_name: str) -> bool:
@@ -258,15 +301,10 @@ class TLSRequirerOperatorCharm(CharmBase):
         Returns:
             None
         """
-        replicas_relation = self.model.get_relation("replicas")
         private_key_password = self._generate_password()
         private_key = generate_private_key(password=private_key_password.encode())
-        replicas_relation.data[self.app].update(  # type: ignore[union-attr]
-            {
-                "private_key_password": private_key_password,
-                "private_key": private_key.decode(),
-            }
-        )
+        self._store_private_key(private_key.decode())
+        self._store_private_key_password(private_key_password)
         logger.info("Private key generated and stored.")
 
     def _on_certificate_expiring(
@@ -281,33 +319,31 @@ class TLSRequirerOperatorCharm(CharmBase):
         Returns:
             None
         """
-        if not self.unit.is_leader():
-            return
         if not self._config_subject:
             self.unit.status = BlockedStatus("Config `subject` must be set.")
             return
-        if not self._private_key_is_stored:
+        if not self._replicas_relation_created:
+            self.unit.status = WaitingStatus("Waiting for replicas relation to be created")
+            event.defer()
+            return
+        if not self._stored_private_key or not self._stored_private_key_password:
             self.unit.status = WaitingStatus("Waiting for private key to be generated.")
             event.defer()
             return
-        replicas_relation = self.model.get_relation("replicas")
-        if not self._csr_is_stored:
+        if not self._stored_csr:
             self.unit.status = BlockedStatus("Old CSR not found")
             return
-        old_csr = replicas_relation.data[self.app].get("csr")  # type: ignore[union-attr]
-        private_key_password = replicas_relation.data[self.app].get("private_key_password")  # type: ignore[union-attr]  # noqa: E501
-        private_key = replicas_relation.data[self.app].get("private_key")  # type: ignore[union-attr]  # noqa: E501
         self.unit.status = MaintenanceStatus("Requesting new certificate")
         new_csr = generate_csr(
-            private_key=private_key.encode(),
-            private_key_password=private_key_password.encode(),
+            private_key=self._stored_private_key.encode(),
+            private_key_password=self._stored_private_key_password.encode(),
             subject=self._config_subject,
         )
         self.certificates.request_certificate_renewal(
-            old_certificate_signing_request=old_csr.encode(),
+            old_certificate_signing_request=self._stored_csr.encode(),
             new_certificate_signing_request=new_csr,
         )
-        replicas_relation.data[self.app].update({"csr": new_csr.decode()})  # type: ignore[union-attr]  # noqa: E501
+        self._store_csr(csr=new_csr.decode())
 
     def _on_get_certificate_action(self, event: ActionEvent) -> None:
         """Triggered when users run the `get-certificate` Juju action.
@@ -318,25 +354,19 @@ class TLSRequirerOperatorCharm(CharmBase):
         Returns:
             None
         """
-        replicas_relation = self.model.get_relation("replicas")
-        if replicas_relation:
-            certificate = replicas_relation.data[self.app].get("certificate", None)
-            ca = replicas_relation.data[self.app].get("ca", None)
-            chain = replicas_relation.data[self.app].get("chain", None)
-        else:
-            certificate = None
-            ca = None
-            chain = None
-        if not certificate:
-            event.fail("Certificate not available")
+        if not self._replicas_relation_created:
+            event.fail("Replicas relation not created.")
             return
-        event.set_results(
-            {
-                "certificate": certificate,
-                "ca": ca,
-                "chain": chain,
-            }
-        )
+        if self._stored_certificate:
+            event.set_results(
+                {
+                    "certificate": self._stored_certificate,
+                    "ca": self._stored_ca_certificate,
+                    "chain": self._stored_ca_chain,
+                }
+            )
+        else:
+            event.fail("Certificate not available")
 
     def _on_renew_certificate_action(self, event: ActionEvent) -> None:
         """Triggered when users run the `renew-certificate` Juju action.
@@ -347,15 +377,10 @@ class TLSRequirerOperatorCharm(CharmBase):
         Returns:
             None
         """
-        if not self.unit.is_leader():
-            event.fail("Unit is not leader")
+        if not self._stored_private_key or not self._stored_private_key_password:
+            event.fail("Private key or password is not stored")
             return
-        if not self._private_key_is_stored:
-            event.fail("Private key is not stored")
-            return
-        replicas_relation = self.model.get_relation("replicas")
-        old_csr = replicas_relation.data[self.app].get("csr")  # type: ignore[union-attr]
-        if old_csr:
+        if self._stored_csr:
             self._renew_certificate()
         else:
             self._request_certificate()
@@ -374,25 +399,21 @@ class TLSRequirerOperatorCharm(CharmBase):
         Returns:
             None
         """
-        if not self.unit.is_leader():
-            event.fail("Unit is not leader")
-            return
-        replicas_relation = self.model.get_relation("replicas")
-        if not replicas_relation:
+        if not self._replicas_relation_created:
             event.fail("No replicas relation")
             return
-        csr = replicas_relation.data[self.app].get("csr")
-        if not csr:
+        if not self._stored_csr:
             event.fail("No stored CSR")
             return
-        certificate = replicas_relation.data[self.app].get("certificate")
-        if not certificate:
+        if not self._stored_certificate:
             event.fail("No stored certificate")
             return
-        self.certificates.request_certificate_revocation(certificate_signing_request=csr.encode())
-        replicas_relation.data[self.app].pop("certificate")
-        replicas_relation.data[self.app].pop("ca")
-        replicas_relation.data[self.app].pop("chain")
+        self.certificates.request_certificate_revocation(
+            certificate_signing_request=self._stored_csr.encode()
+        )
+        self._unstore_certificate()
+        self._unstore_ca_certificate()
+        self._unstore_ca_chain()
         event.set_results(
             {
                 "success": "Certificate revocation sent.",
