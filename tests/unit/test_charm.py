@@ -1,7 +1,5 @@
 # Copyright 2021 Guillaume Belanger
 # See LICENSE file for licensing details.
-#
-# Learn more about testing at: https://juju.is/docs/sdk/testing
 
 import unittest
 from unittest.mock import Mock, patch
@@ -31,45 +29,31 @@ class TestCharm(unittest.TestCase):
         self.addCleanup(self.harness.cleanup)
         self.harness.begin()
 
-    def test_given_unit_is_leader_when_replicas_relation_created_then_private_key_is_generated(
+    def test_given_config_is_set_on_install_then_private_key_is_generated(
         self,
     ):
-        self.harness.set_leader(is_leader=True)
+        event = Mock()
         self.harness.update_config(key_values={"subject": "whatever"})
 
         relation_id = self.harness.add_relation("replicas", self.harness.charm.app.name)
         self.harness.add_relation_unit(relation_id=relation_id, remote_unit_name="replicas/0")
 
+        self.harness.charm._on_install(event=event)
+
         relation_data = self.harness.get_relation_data(
-            relation_id=relation_id, app_or_unit=self.harness.charm.app.name
+            relation_id=relation_id, app_or_unit=self.harness.charm.unit.name
         )
         serialization.load_pem_private_key(
             data=relation_data["private_key"].encode(),
             password=relation_data["private_key_password"].encode(),
         )
 
-    def test_given_unit_is_not_leader_when_replicas_relation_created_then_private_key_is_generated(
-        self,
-    ):
-        self.harness.set_leader(is_leader=False)
-        self.harness.update_config(key_values={"subject": "whatever"})
-
-        relation_id = self.harness.add_relation("replicas", self.harness.charm.app.name)
-        self.harness.add_relation_unit(relation_id=relation_id, remote_unit_name="replicas/0")
-
-        relation_data = self.harness.get_relation_data(
-            relation_id=relation_id, app_or_unit=self.harness.charm.app.name
-        )
-        assert "private_key" not in relation_data
-        assert "private_key_password" not in relation_data
-
     @patch("charm.generate_csr")
     @patch(f"{CHARM_LIB_PATH}.TLSCertificatesRequiresV1.request_certificate_creation")
-    def test_given_unit_is_not_leader_and_private_key_is_stored_when_on_certificates_relation_joined_then_certificate_request_is_not_made(  # noqa: E501
+    def test_given_private_key_is_stored_when_on_certificates_relation_joined_then_certificate_request_is_not_made(  # noqa: E501
         self, patch_request_certificate, patch_generate_csr
     ):
         self.harness.update_config(key_values={"subject": "whatever"})
-        self.harness.set_leader(is_leader=False)
         peer_relation_id = self.harness.add_relation(
             relation_name="replicas", remote_app=self.harness.charm.app.name
         )
@@ -92,11 +76,10 @@ class TestCharm(unittest.TestCase):
 
     @patch("charm.generate_csr")
     @patch(f"{CHARM_LIB_PATH}.TLSCertificatesRequiresV1.request_certificate_creation")
-    def test_given_unit_is_leader_and_peer_relation_is_not_set_when_on_certificates_relation_joined_then_certificate_request_is_not_made(  # noqa: E501
+    def test_given_peer_relation_is_not_set_when_on_certificates_relation_joined_then_certificate_request_is_not_made(  # noqa: E501
         self, patch_request_certificate, patch_generate_csr
     ):
         self.harness.update_config(key_values={"subject": "whatever"})
-        self.harness.set_leader(is_leader=True)
         event = Mock()
         patch_generate_csr.return_value = b"whatever csr"
 
@@ -106,11 +89,10 @@ class TestCharm(unittest.TestCase):
 
     @patch("charm.generate_csr")
     @patch(f"{CHARM_LIB_PATH}.TLSCertificatesRequiresV1.request_certificate_creation")
-    def test_given_unit_is_leader_and_peer_relation_is_set_but_private_key_not_stored_when_on_certificates_relation_joined_then_certificate_request_is_not_made(  # noqa: E501
+    def test_given_peer_relation_is_set_but_private_key_not_stored_when_on_certificates_relation_joined_then_certificate_request_is_not_made(  # noqa: E501
         self, patch_request_certificate, patch_generate_csr
     ):
         self.harness.update_config(key_values={"subject": "whatever"})
-        self.harness.set_leader(is_leader=True)
         event = Mock()
         patch_generate_csr.return_value = b"whatever csr"
         peer_relation_id = self.harness.add_relation(
@@ -128,22 +110,21 @@ class TestCharm(unittest.TestCase):
 
     @patch("charm.generate_csr")
     @patch(f"{CHARM_LIB_PATH}.TLSCertificatesRequiresV1.request_certificate_creation")
-    def test_given_unit_is_leader_and_private_key_is_stored_when_on_certificates_relation_joined_then_certificate_request_is_made(  # noqa: E501
+    def test_given_private_key_is_stored_when_on_certificates_relation_joined_then_certificate_request_is_made(  # noqa: E501
         self, patch_request_certificate, patch_generate_csr
     ):
         self.harness.update_config(key_values={"subject": "whatever"})
-        self.harness.set_leader(is_leader=True)
         peer_relation_id = self.harness.add_relation(
             relation_name="replicas", remote_app=self.harness.charm.app.name
         )
-        key_values = {
-            "private_key": PRIVATE_KEY,
-            "private_key_password": PRIVATE_KEY_PASSWORD.decode(),
-        }
+
         self.harness.update_relation_data(
             relation_id=peer_relation_id,
-            app_or_unit=self.harness.charm.app.name,
-            key_values=key_values,
+            app_or_unit=self.harness.charm.unit.name,
+            key_values={
+                "private_key": PRIVATE_KEY,
+                "private_key_password": PRIVATE_KEY_PASSWORD.decode(),
+            },
         )
         event = Mock()
         csr = b"whatever csr"
@@ -155,17 +136,16 @@ class TestCharm(unittest.TestCase):
 
     @patch("charm.generate_csr")
     @patch(f"{CHARM_LIB_PATH}.TLSCertificatesRequiresV1.request_certificate_creation")
-    def test_given_unit_is_leader_and_private_key_is_stored_when_on_certificates_relation_joined_then_csr_is_added_to_relation_data(  # noqa: E501
+    def test_given_private_key_is_stored_when_on_certificates_relation_joined_then_csr_is_added_to_relation_data(  # noqa: E501
         self, _, patch_generate_csr
     ):
         self.harness.update_config(key_values={"subject": "whatever"})
-        self.harness.set_leader(is_leader=True)
         peer_relation_id = self.harness.add_relation(
             relation_name="replicas", remote_app=self.harness.charm.app.name
         )
         self.harness.update_relation_data(
             relation_id=peer_relation_id,
-            app_or_unit=self.harness.charm.app.name,
+            app_or_unit=self.harness.charm.unit.name,
             key_values={
                 "private_key": PRIVATE_KEY,
                 "private_key_password": PRIVATE_KEY_PASSWORD.decode(),
@@ -178,21 +158,20 @@ class TestCharm(unittest.TestCase):
         self.harness.charm._on_certificates_relation_joined(event=event)
 
         relation_data = self.harness.get_relation_data(
-            relation_id=peer_relation_id, app_or_unit=self.harness.charm.app.name
+            relation_id=peer_relation_id, app_or_unit=self.harness.charm.unit.name
         )
         assert relation_data["csr"] == csr.decode()
 
     @patch(f"{CHARM_LIB_PATH}.TLSCertificatesRequiresV1.request_certificate_creation")
-    def test_given_unit_is_leader_private_key_is_stored_but_subject_config_is_not_set_when_on_certificates_relation_joined_then_request_certificate_not_made(  # noqa: E501
+    def test_given_private_key_is_stored_but_subject_config_is_not_set_when_on_certificates_relation_joined_then_request_certificate_not_made(  # noqa: E501
         self, patch_request_certificate
     ):
-        self.harness.set_leader(is_leader=True)
         peer_relation_id = self.harness.add_relation(
             relation_name="replicas", remote_app=self.harness.charm.app.name
         )
         self.harness.update_relation_data(
             relation_id=peer_relation_id,
-            app_or_unit=self.harness.charm.app.name,
+            app_or_unit=self.harness.charm.unit.name,
             key_values={
                 "private_key": PRIVATE_KEY,
                 "private_key_password": PRIVATE_KEY_PASSWORD.decode(),
@@ -204,25 +183,7 @@ class TestCharm(unittest.TestCase):
 
         patch_request_certificate.assert_not_called()
 
-    def test_given_unit_is_not_leader_when_on_certificate_available_then_peer_relation_data_not_updated(  # noqa: E501
-        self,
-    ):
-        event = Mock()
-        self.harness.set_leader(is_leader=False)
-        peer_relation_id = self.harness.add_relation(
-            relation_name="replicas", remote_app=self.harness.charm.app.name
-        )
-
-        self.harness.charm._on_certificate_available(event=event)
-
-        relation_data = self.harness.get_relation_data(
-            relation_id=peer_relation_id, app_or_unit=self.harness.charm.app.name
-        )
-        assert "certificate" not in relation_data
-        assert "ca" not in relation_data
-        assert "chain" not in relation_data
-
-    def test_given_unit_is_leader_and_peer_relation_not_created_when_on_certificate_available_then_status_is_waiting(  # noqa: E501
+    def test_given_peer_relation_not_created_when_on_certificate_available_then_status_is_waiting(
         self,
     ):
         certificate = "whatever cert"
@@ -232,7 +193,6 @@ class TestCharm(unittest.TestCase):
         event.certificate = certificate
         event.ca = ca
         event.chain = chain
-        self.harness.set_leader(is_leader=True)
 
         self.harness.charm._on_certificate_available(event=event)
 
@@ -241,7 +201,9 @@ class TestCharm(unittest.TestCase):
             self.harness.charm.unit.status,
         )
 
-    def test_given_unit_is_leader_when_on_certificate_available_then_certificate_is_stored(self):
+    def test_given_certificate_in_certificates_relation_data_when_on_certificate_available_then_certificate_is_stored(  # noqa: E501
+        self,
+    ):
         certificate = "whatever cert"
         ca = "whatever ca"
         chain = "whatever chain"
@@ -249,7 +211,6 @@ class TestCharm(unittest.TestCase):
         event.certificate = certificate
         event.ca = ca
         event.chain = chain
-        self.harness.set_leader(is_leader=True)
         peer_relation_id = self.harness.add_relation(
             relation_name="replicas", remote_app=self.harness.charm.app.name
         )
@@ -257,13 +218,15 @@ class TestCharm(unittest.TestCase):
         self.harness.charm._on_certificate_available(event=event)
 
         relation_data = self.harness.get_relation_data(
-            relation_id=peer_relation_id, app_or_unit=self.harness.charm.app.name
+            relation_id=peer_relation_id, app_or_unit=self.harness.charm.unit.name
         )
         self.assertEqual(certificate, relation_data["certificate"])
         self.assertEqual(ca, relation_data["ca"])
         self.assertEqual(chain, relation_data["chain"])
 
-    def test_given_unit_is_leader_when_on_certificate_available_then_status_is_active(self):
+    def test_given_certificate_in_certificates_relation_data_when_on_certificate_available_then_status_is_active(  # noqa: E501
+        self,
+    ):
         certificate = "whatever cert"
         ca = "whatever ca"
         chain = "whatever chain"
@@ -271,7 +234,6 @@ class TestCharm(unittest.TestCase):
         event.certificate = certificate
         event.ca = ca
         event.chain = chain
-        self.harness.set_leader(is_leader=True)
         self.harness.add_relation(relation_name="replicas", remote_app=self.harness.charm.app.name)
 
         self.harness.charm._on_certificate_available(event=event)
@@ -279,22 +241,27 @@ class TestCharm(unittest.TestCase):
         self.assertEqual(ActiveStatus(), self.harness.charm.unit.status)
 
     def test_given_subject_config_not_provided_when_on_config_changed_then_status_is_blocked(self):
-        self.harness.set_leader(is_leader=True)
-
         self.harness.update_config(key_values={})
 
         self.assertEqual(
             BlockedStatus("Config `subject` must be set."), self.harness.charm.unit.status
         )
 
-    def test_given_unit_is_leader_and_peer_relation_is_created_and_certificates_relation_not_created_when_on_config_changed_then_status_is_waiting(  # noqa: E501
+    def test_given_peer_relation_is_created_and_certificates_relation_not_created_when_on_config_changed_then_status_is_waiting(  # noqa: E501
         self,
     ):
-        self.harness.set_leader(is_leader=True)
-        relation_id = self.harness.add_relation(
+        peer_relation_id = self.harness.add_relation(
             relation_name="replicas", remote_app=self.harness.charm.app.name
         )
-        self.harness.add_relation_unit(relation_id=relation_id, remote_unit_name="replicas/0")
+        self.harness.add_relation_unit(relation_id=peer_relation_id, remote_unit_name="replicas/0")
+        self.harness.update_relation_data(
+            relation_id=peer_relation_id,
+            app_or_unit=self.harness.charm.unit.name,
+            key_values={
+                "private_key": PRIVATE_KEY,
+                "private_key_password": PRIVATE_KEY_PASSWORD.decode(),
+            },
+        )
 
         self.harness.update_config(key_values={"subject": "whatever subject"})
 
@@ -305,12 +272,11 @@ class TestCharm(unittest.TestCase):
 
     @patch("charm.generate_csr")
     @patch(f"{CHARM_LIB_PATH}.TLSCertificatesRequiresV1.request_certificate_creation")
-    def test_given_unit_is_leader_and_peer_relation_is_created_and_certificates_relation_is_created_when_on_config_changed_then_certificate_request_is_made(  # noqa: E501
+    def test_given_peer_relation_is_created_and_certificates_relation_is_created_when_on_config_changed_then_certificate_request_is_made(  # noqa: E501
         self, patch_certificate_request, patch_generate_csr
     ):
         csr = b"wahtever"
         patch_generate_csr.return_value = csr
-        self.harness.set_leader(is_leader=True)
         peer_relation_id = self.harness.add_relation(
             relation_name="replicas", remote_app=self.harness.charm.app.name
         )
@@ -318,34 +284,26 @@ class TestCharm(unittest.TestCase):
             relation_name="certificates", remote_app="tls-certificates-provider"
         )
         self.harness.add_relation_unit(relation_id=peer_relation_id, remote_unit_name="replicas/0")
+        self.harness.update_relation_data(
+            relation_id=peer_relation_id,
+            app_or_unit=self.harness.charm.unit.name,
+            key_values={
+                "private_key": PRIVATE_KEY,
+                "private_key_password": PRIVATE_KEY_PASSWORD.decode(),
+            },
+        )
 
         self.harness.update_config(key_values={"subject": "whatever subject"})
 
         patch_certificate_request.assert_called_with(certificate_signing_request=csr)
 
     @patch(f"{CHARM_LIB_PATH}.TLSCertificatesRequiresV1.request_certificate_renewal")
-    def test_given_unit_is_not_leader_when_on_certificate_expiring_then_certicate_renewal_is_not_made(  # noqa: E501
+    def test_given_subject_config_not_set_when_on_certificate_expiring_then_certicate_renewal_is_not_made(  # noqa: E501
         self, patch_certificate_renewal
     ):
         csr = "whatever csr"
         event = Mock()
         event.certificate_signing_request = csr
-        self.harness.set_leader(is_leader=False)
-        self.harness.add_relation(relation_name="replicas", remote_app=self.harness.charm.app.name)
-        self.harness.update_config(key_values={"subject": "whatever"})
-
-        self.harness.charm._on_certificate_expiring(event=event)
-
-        patch_certificate_renewal.assert_not_called()
-
-    @patch(f"{CHARM_LIB_PATH}.TLSCertificatesRequiresV1.request_certificate_renewal")
-    def test_given_unit_is_leader_but_subject_config_not_set_when_on_certificate_expiring_then_certicate_renewal_is_not_made(  # noqa: E501
-        self, patch_certificate_renewal
-    ):
-        csr = "whatever csr"
-        event = Mock()
-        event.certificate_signing_request = csr
-        self.harness.set_leader(is_leader=True)
         self.harness.add_relation(relation_name="replicas", remote_app=self.harness.charm.app.name)
 
         self.harness.charm._on_certificate_expiring(event=event)
@@ -353,13 +311,12 @@ class TestCharm(unittest.TestCase):
         patch_certificate_renewal.assert_not_called()
 
     @patch(f"{CHARM_LIB_PATH}.TLSCertificatesRequiresV1.request_certificate_renewal")
-    def test_given_unit_is_leader_but_replicas_relation_not_ready_when_on_certificate_expiring_then_certicate_renewal_is_not_made(  # noqa: E501
+    def test_given_replicas_relation_not_ready_when_on_certificate_expiring_then_certicate_renewal_is_not_made(  # noqa: E501
         self, patch_certificate_renewal
     ):
         csr = "whatever csr"
         event = Mock()
         event.certificate_signing_request = csr
-        self.harness.set_leader(is_leader=True)
         self.harness.update_config(key_values={"subject": "whatever"})
 
         self.harness.charm._on_certificate_expiring(event=event)
@@ -368,7 +325,7 @@ class TestCharm(unittest.TestCase):
 
     @patch("charm.generate_csr")
     @patch(f"{CHARM_LIB_PATH}.TLSCertificatesRequiresV1.request_certificate_renewal")
-    def test_given_unit_is_leader_replicas_relation_ready_and_subject_config_is_set_when_on_certificate_expiring_then_certicate_renewal_is_made(  # noqa: E501
+    def test_given_replicas_relation_ready_and_subject_config_is_set_when_on_certificate_expiring_then_certicate_renewal_is_made(  # noqa: E501
         self, patch_certificate_renewal, patch_generate_csr
     ):
         old_csr = "whatever old csr"
@@ -376,14 +333,13 @@ class TestCharm(unittest.TestCase):
         event = Mock()
         event.certificate_signing_request = old_csr
         patch_generate_csr.return_value = new_csr.encode()
-        self.harness.set_leader(is_leader=True)
         self.harness.update_config(key_values={"subject": "whatever"})
         relation_id = self.harness.add_relation(
             relation_name="replicas", remote_app=self.harness.charm.app.name
         )
         self.harness.update_relation_data(
             relation_id=relation_id,
-            app_or_unit=self.harness.charm.app.name,
+            app_or_unit=self.harness.charm.unit.name,
             key_values={
                 "private_key": PRIVATE_KEY,
                 "private_key_password": PRIVATE_KEY_PASSWORD.decode(),
@@ -406,14 +362,13 @@ class TestCharm(unittest.TestCase):
         old_csr = "whatever old csr"
         event = Mock()
         event.certificate_signing_request = old_csr
-        self.harness.set_leader(is_leader=True)
         self.harness.update_config(key_values={"subject": "whatever"})
         relation_id = self.harness.add_relation(
             relation_name="replicas", remote_app=self.harness.charm.app.name
         )
         self.harness.update_relation_data(
             relation_id=relation_id,
-            app_or_unit=self.harness.charm.app.name,
+            app_or_unit=self.harness.charm.unit.name,
             key_values={
                 "private_key": PRIVATE_KEY,
                 "private_key_password": PRIVATE_KEY_PASSWORD.decode(),
@@ -439,7 +394,7 @@ class TestCharm(unittest.TestCase):
         )
         self.harness.update_relation_data(
             relation_id=relation_id,
-            app_or_unit=self.harness.charm.app.name,
+            app_or_unit=self.harness.charm.unit.name,
             key_values={
                 "csr": old_csr,
                 "private_key": None,
@@ -454,14 +409,14 @@ class TestCharm(unittest.TestCase):
             self.harness.charm.unit.status,
         )
 
-    def test_given_peer_relation_not_created_when_on_get_certificate_action_when_then_na_is_returned(  # noqa: E501
+    def test_given_peer_relation_not_created_when_on_get_certificate_action_when_then_event_fails(
         self,
     ):
         event = Mock()
 
         self.harness.charm._on_get_certificate_action(event=event)
 
-        event.fail.assert_called_with("Certificate not available")
+        event.fail.assert_called_with("Replicas relation not created.")
 
     def test_given_certificate_not_stored_when_on_get_certificate_action_when_then_na_is_returned(
         self,
@@ -485,7 +440,7 @@ class TestCharm(unittest.TestCase):
         )
         self.harness.update_relation_data(
             relation_id=relation_id,
-            app_or_unit=self.harness.charm.app.name,
+            app_or_unit=self.harness.charm.unit.name,
             key_values={
                 "certificate": certificate,
                 "ca": ca,
@@ -503,35 +458,14 @@ class TestCharm(unittest.TestCase):
             }
         )
 
-    def test_given_unit_is_not_leader_when_renew_certificate_action_then_event_fails(self):
-        event = Mock()
-        self.harness.set_leader(is_leader=False)
-        peer_relation_id = self.harness.add_relation(
-            relation_name="replicas", remote_app=self.harness.charm.app.name
-        )
-        self.harness.update_relation_data(
-            relation_id=peer_relation_id,
-            app_or_unit=self.harness.charm.app.name,
-            key_values={
-                "private_key": None,
-                "private_key_password": "banana",
-                "csr": "whatever csr",
-            },
-        )
-
-        self.harness.charm._on_renew_certificate_action(event=event)
-
-        event.fail.assert_called_with("Unit is not leader")
-
     def test_given_private_key_not_stored_when_renew_certificate_action_then_event_fails(self):
         event = Mock()
-        self.harness.set_leader(is_leader=True)
         peer_relation_id = self.harness.add_relation(
             relation_name="replicas", remote_app=self.harness.charm.app.name
         )
         self.harness.update_relation_data(
             relation_id=peer_relation_id,
-            app_or_unit=self.harness.charm.app.name,
+            app_or_unit=self.harness.charm.unit.name,
             key_values={
                 "private_key": None,
                 "private_key_password": "banana",
@@ -541,7 +475,7 @@ class TestCharm(unittest.TestCase):
 
         self.harness.charm._on_renew_certificate_action(event=event)
 
-        event.fail.assert_called_with("Private key is not stored")
+        event.fail.assert_called_with("Private key or password is not stored")
 
     @patch(f"{CHARM_LIB_PATH}.TLSCertificatesRequiresV1.request_certificate_creation")
     @patch("charm.generate_csr")
@@ -551,13 +485,12 @@ class TestCharm(unittest.TestCase):
         new_csr = b"whatever new csr"
         patch_generate_csr.return_value = new_csr
         event = Mock()
-        self.harness.set_leader(is_leader=True)
         peer_relation_id = self.harness.add_relation(
             relation_name="replicas", remote_app=self.harness.charm.app.name
         )
         self.harness.update_relation_data(
             relation_id=peer_relation_id,
-            app_or_unit=self.harness.charm.app.name,
+            app_or_unit=self.harness.charm.unit.name,
             key_values={
                 "private_key": "whatever private key",
                 "private_key_password": "banana",
@@ -577,13 +510,12 @@ class TestCharm(unittest.TestCase):
         stored_csr = "whatever stored csr"
         new_csr = "whatever new csr"
         event = Mock()
-        self.harness.set_leader(is_leader=True)
         peer_relation_id = self.harness.add_relation(
             relation_name="replicas", remote_app=self.harness.charm.app.name
         )
         self.harness.update_relation_data(
             relation_id=peer_relation_id,
-            app_or_unit=self.harness.charm.app.name,
+            app_or_unit=self.harness.charm.unit.name,
             key_values={
                 "private_key": "whatever private key",
                 "private_key_password": "banana",
@@ -622,17 +554,8 @@ class TestCharm(unittest.TestCase):
 
         event.set_results.assert_called_with({"relation-data": relation_data})
 
-    def test_given_unit_is_not_leader_when_on_revoke_certificate_action_then_event_fails(self):
-        event = Mock()
-        self.harness.set_leader(is_leader=False)
-
-        self.harness.charm._on_revoke_certificate_action(event=event)
-
-        event.fail.assert_called_with("Unit is not leader")
-
     def test_given_no_replicas_relation_when_on_revoke_certificate_action_then_event_fails(self):
         event = Mock()
-        self.harness.set_leader(is_leader=True)
 
         self.harness.charm._on_revoke_certificate_action(event=event)
 
@@ -642,13 +565,12 @@ class TestCharm(unittest.TestCase):
         self,
     ):
         event = Mock()
-        self.harness.set_leader(is_leader=True)
         relation_id = self.harness.add_relation(
             relation_name="replicas", remote_app=self.harness.charm.app.name
         )
         self.harness.update_relation_data(
             relation_id=relation_id,
-            app_or_unit=self.harness.charm.app.name,
+            app_or_unit=self.harness.charm.unit.name,
             key_values={"csr": None},
         )
 
@@ -662,13 +584,12 @@ class TestCharm(unittest.TestCase):
     ):
         event = Mock()
         csr = "whatever csr"
-        self.harness.set_leader(is_leader=True)
         relation_id = self.harness.add_relation(
             relation_name="replicas", remote_app=self.harness.charm.app.name
         )
         self.harness.update_relation_data(
             relation_id=relation_id,
-            app_or_unit=self.harness.charm.app.name,
+            app_or_unit=self.harness.charm.unit.name,
             key_values={
                 "csr": csr,
                 "certificate": "whatever cert",
@@ -689,13 +610,12 @@ class TestCharm(unittest.TestCase):
     ):
         event = Mock()
         csr = "whatever csr"
-        self.harness.set_leader(is_leader=True)
         relation_id = self.harness.add_relation(
             relation_name="replicas", remote_app=self.harness.charm.app.name
         )
         self.harness.update_relation_data(
             relation_id=relation_id,
-            app_or_unit=self.harness.charm.app.name,
+            app_or_unit=self.harness.charm.unit.name,
             key_values={
                 "csr": csr,
                 "certificate": "whatever cert",
@@ -707,7 +627,7 @@ class TestCharm(unittest.TestCase):
         self.harness.charm._on_revoke_certificate_action(event=event)
 
         relation_data = self.harness.get_relation_data(
-            relation_id=relation_id, app_or_unit=self.harness.charm.app.name
+            relation_id=relation_id, app_or_unit=self.harness.charm.unit.name
         )
 
         assert "certificate" not in relation_data
@@ -720,13 +640,12 @@ class TestCharm(unittest.TestCase):
     ):
         event = Mock()
         csr = "whatever csr"
-        self.harness.set_leader(is_leader=True)
         relation_id = self.harness.add_relation(
             relation_name="replicas", remote_app=self.harness.charm.app.name
         )
         self.harness.update_relation_data(
             relation_id=relation_id,
-            app_or_unit=self.harness.charm.app.name,
+            app_or_unit=self.harness.charm.unit.name,
             key_values={
                 "csr": csr,
             },
